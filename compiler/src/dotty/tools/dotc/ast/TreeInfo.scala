@@ -564,14 +564,14 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *            Idempotent  if running the statement a second time has no side effects
    *            Impure      otherwise
    */
-  def statPurity(tree: Tree)(using Context): PurityLevel = unsplice(tree) match {
+  def statPurity(tree: Tree, considerCastsPure: Boolean)(using Context): PurityLevel = unsplice(tree) match {
     case EmptyTree
        | TypeDef(_, _)
        | Import(_, _)
        | DefDef(_, _, _, _) =>
       Pure
     case vdef @ ValDef(_, _, _) =>
-      if vdef.symbol.flags.is(Mutable) then Impure else exprPurity(vdef.rhs) `min` Pure
+      if vdef.symbol.flags.is(Mutable) then Impure else exprPurity(vdef.rhs, considerCastsPure) `min` Pure
     case _ =>
       Impure
       // TODO: It seem like this should be exprPurity(tree)
@@ -586,7 +586,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
    *  takes a different code path than all to follow; but they are idempotent
    *  because running the expression a second time gives the cached result.
    */
-  def exprPurity(tree: Tree)(using Context): PurityLevel = unsplice(tree) match {
+  def exprPurity(tree: Tree, considerCastsPure: Boolean = false)(using Context): PurityLevel = unsplice(tree) match {
     case EmptyTree
        | This(_)
        | Super(_, _)
@@ -596,21 +596,21 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
       refPurity(tree)
     case Select(qual, _) =>
       if (tree.symbol.is(Erased)) Pure
-      else refPurity(tree) `min` exprPurity(qual)
+      else refPurity(tree) `min` exprPurity(qual, considerCastsPure)
     case New(_) | Closure(_, _, _) =>
       Pure
     case TypeApply(fn, _) =>
       val sym = fn.symbol
-      if tree.tpe.isInstanceOf[MethodOrPoly] then exprPurity(fn)
+      if tree.tpe.isInstanceOf[MethodOrPoly] then exprPurity(fn, considerCastsPure)
       else if sym == defn.QuotedTypeModule_of
           || sym == defn.Predef_classOf
           || sym == defn.Compiletime_erasedValue && tree.tpe.dealias.isInstanceOf[ConstantType]
           || defn.capsErasedValueMethods.contains(sym)
-          || sym == defn.Any_typeCast
+          || (considerCastsPure && sym == defn.Any_typeCast)
       then Pure
       else Impure
     case Apply(fn, args) =>
-      val factorPurity = minOf(exprPurity(fn), args.map(exprPurity))
+      val factorPurity = minOf(exprPurity(fn, considerCastsPure), args.map(exprPurity(_, considerCastsPure)))
       if tree.tpe.isInstanceOf[MethodOrPoly] then // no evaluation
         factorPurity `min` Pure
       else if isPureApply(tree, fn) then
@@ -620,13 +620,13 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
       else
         Impure
     case Typed(expr, _) =>
-      exprPurity(expr)
+      exprPurity(expr, considerCastsPure)
     case Block(stats, expr) =>
-      minOf(exprPurity(expr), stats.map(statPurity))
+      minOf(exprPurity(expr, considerCastsPure), stats.map(statPurity(_, considerCastsPure)))
     case Inlined(_, bindings, expr) =>
-      minOf(exprPurity(expr), bindings.map(statPurity))
+      minOf(exprPurity(expr, considerCastsPure), bindings.map(statPurity(_, considerCastsPure)))
     case NamedArg(_, expr) =>
-      exprPurity(expr)
+      exprPurity(expr, considerCastsPure)
     case _ =>
       Impure
   }
@@ -638,8 +638,8 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
     case _ => exprPurity(tree) == PurePath
   }
 
-  def isPureExpr(tree: Tree)(using Context): Boolean =
-    exprPurity(tree) >= Pure
+  def isPureExpr(tree: Tree, considerCastsPure: Boolean = false)(using Context): Boolean =
+    exprPurity(tree, considerCastsPure) >= Pure
 
   def isIdempotentPath(tree: Tree)(using Context): Boolean = tree.tpe match {
     case tpe: ConstantType => exprPurity(tree) >= Idempotent
@@ -649,7 +649,7 @@ trait TypedTreeInfo extends TreeInfo[Type] { self: Trees.Instance[Type] =>
   def isIdempotentExpr(tree: Tree)(using Context): Boolean =
     exprPurity(tree) >= Idempotent
 
-  def isPureBinding(tree: Tree)(using Context): Boolean = statPurity(tree) >= Pure
+  def isPureBinding(tree: Tree)(using Context): Boolean = statPurity(tree, false) >= Pure
 
   def isPureSyntheticCaseApply(sym: Symbol)(using Context): Boolean =
     sym.isAllOf(SyntheticMethod)

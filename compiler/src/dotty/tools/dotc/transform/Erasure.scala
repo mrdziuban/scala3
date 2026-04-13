@@ -558,7 +558,7 @@ object Erasure {
     def checkPureErased(tree: untpd.Tree, isArgument: Boolean, isImplicit: Boolean = false)(using Context): Unit =
       val tree1 = tree.asInstanceOf[tpd.Tree]
       inContext(preErasureCtx):
-        if !tpd.isPureExpr(tree1) then
+        if !tpd.isPureExpr(tree1, true) then
           report.error(ErasedNotPure(tree1, isArgument, isImplicit), tree1.srcPos)
 
     def erasedDef(sym: Symbol)(using Context): Tree =
